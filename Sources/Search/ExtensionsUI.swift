@@ -228,7 +228,7 @@ struct ExtensionsPage: View {
                 parts.append("shows in new tabs")
             }
             if context?.hasAccessToPrivateData == true { parts.append("allowed in private tabs") }
-            if let errors = context?.errors, !errors.isEmpty { parts.append("\(errors.count) warning\(errors.count == 1 ? "" : "s")") }
+            if let errors = context.map(Extensions.errors(of:)), !errors.isEmpty { parts.append("\(errors.count) warning\(errors.count == 1 ? "" : "s")") }
             return parts.joined(separator: " · ")
         }
     }
@@ -293,7 +293,7 @@ struct StoreOffer: View {
     }
 }
 
-/// Settings › General › Home page: what a new tab opens to, while an
+/// Settings › Browsing › Searching › Home page: what a new tab opens to, while an
 /// extension offers a page for it. Search's own page with the address field
 /// ready, or the page of an extension that asked to take its place, and
 /// the way back from one that did. With nothing offered there is nothing to
@@ -313,7 +313,8 @@ struct HomePageLine: View {
             let askers = extensions.newTabAskers
             let current = extensions.newTabPageID
             if !askers.isEmpty {
-                Line("Home page", detail(askers, current)) {
+                Rule()
+                SettingRow(icon: "house", title: "Home page", detail: detail(askers, current)) {
                     Picker("", selection: Binding(
                         get: { current ?? "" },
                         set: { extensions.setNewTabPage($0.isEmpty ? nil : $0) }
@@ -326,7 +327,6 @@ struct HomePageLine: View {
                     .pickerStyle(.menu)
                     .fixedSize()
                 }
-                Rule()
             }
         }
 

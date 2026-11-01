@@ -68,11 +68,11 @@ def urls(): return [x["url"] for x in sv.sp("state")["tabs"]]
 def main():
     t = sv.T()
     try:
-        # Off, as it is unless turned on.
-        sv.setup(sidebar=True); sv.launch()
+        # Always there since 24 Oct 2026, an old "off" on disk included.
+        sv.setup(sidebar=True, **{"panel.sites": False}); sv.launch()
         sv.page("a")
         panel("site", url=f"{sv.BASE}/panel")
-        t.ok("off: a site doesn't go into the panel", not panel()["shown"], panel())
+        t.ok("always on: a site goes into the panel, an old off notwithstanding", panel()["shown"], panel())
         sv.quit()
 
         sv.setup(sidebar=True, **{"panel.sites": True})
@@ -128,6 +128,18 @@ def main():
         panel("site", tab=b)
         st = panel()
         t.ok("Open in Side Panel from a tab's menu", st["shown"] and st["content"]["url"].endswith("/b"), st)
+
+        # Another site picked with one up (View › Side Panel): the new page
+        # is the one in the panel, not a white panel holding the page let go.
+        wait(lambda: panel()["title"] == "b")
+        other = sv.BASE.replace("127.0.0.1", "localhost") + "/other"
+        panel("site", url=other)
+        wait(lambda: panel()["title"] == "other")
+        st = panel()
+        t.ok("another site picked over one: its page is in the panel, on screen in it",
+             st["shown"] and st["page"] == other and len(st["frame"]) == 4 and st["frame"][2] == WIDTH, st)
+        wait(lambda: panel()["content"]["line"].startswith("localhost"))
+        t.ok("and its line names the new site", panel()["content"]["line"].startswith("localhost"), panel()["content"])
 
         # Never a private tab's page.
         panel("close")

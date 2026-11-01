@@ -17,7 +17,7 @@ struct TabBar: View {
 
     /// Which tab is under the hand, where it started, and how far it has come.
     @State private var landing = false
-    @State private var groupFrames: [UUID: CGRect] = [:]
+    @State private var groupFrames: [UUID: GroupDropFrame] = [:]
     /// The plus only comes out when the pointer is in the row.
     @State private var nearby = false
     @State private var plussed = false
@@ -48,6 +48,8 @@ struct TabBar: View {
                     // The space on screen, first, when there are spaces.
                     // Above the tabs, for the name it shows over them a moment
                     // after a switch.
+                    // The profile, once there is more than one (see Profiles.swift).
+                    if Profiles.shared.several { ProfileBadge(browser: browser) }
                     if browser.prefs.usesSpaces { SpaceDot(browser: browser).zIndex(1) }
 
                     // The tabs, in a run of their own. While they fit, it is
@@ -314,6 +316,7 @@ struct TabBar: View {
             }
             .modifier(Carried(index: index, count: count, step: step, vertical: false,
                               space: "strip", onDropTab: { source, point in drop(source, at: point) },
+                              groupDestination: { source, point in destination(source, at: point) },
                               outside: { browser.dragOut(tab) }, browser: browser, tab: tab) {
                 if browser.prefs.usesTabGroups && tab.pin == nil {
                     browser.move(tab, within: group, to: $0)
@@ -349,15 +352,18 @@ struct TabBar: View {
         } else {
             TabPill(browser: browser, prefs: browser.prefs, tab: tab,
                     live: tab.id == activeID, width: width, room: room, pill: pill,
-                    close: interactive ? { browser.close(tab) } : {})
+                    close: interactive ? { browser.closeTab(tab) } : {})
         }
     }
 
+    private func destination(_ tab: Tab, at point: CGPoint) -> GroupDropTarget? {
+        guard browser.prefs.usesTabGroups, tab.pin == nil else { return nil }
+        return GroupDropFrames.resolve(point, frames: groupFrames, groups: browser.tabGroups,
+                                       excluding: tab.id, vertical: false)
+    }
+
     private func drop(_ tab: Tab, at point: CGPoint) {
-        guard browser.prefs.usesTabGroups, tab.pin == nil else { return }
-        if let id = groupFrames.first(where: { $0.value.contains(point) })?.key {
-            browser.move(tab, toGroup: id)
-        }
+        if let target = destination(tab, at: point) { browser.move(tab, toGroup: target) }
     }
 
     /// How wide the run of tabs is: as wide as the tabs while they fit, as
@@ -502,14 +508,16 @@ struct PinLine: View {
 /// far end of the row, in the sidebar.
 struct Helm: View {
     @ObservedObject var browser: Browser
+    /// One above the other, for the column of icons.
+    var vertical = false
 
     var body: some View {
         if let tab = browser.active {
-            Wheel(browser: browser, tab: tab)
+            Wheel(browser: browser, tab: tab, vertical: vertical)
         } else {
             // Nowhere to go and nothing to reload: the doors stay in place,
             // greyed, so the row doesn't shift when a tab arrives.
-            HStack(spacing: 4) {
+            Helm.stack(vertical) {
                 Door(icon: "chevron.left") {}
                 Door(icon: "chevron.right") {}
                 Door(icon: "arrow.clockwise") {}
@@ -519,18 +527,24 @@ struct Helm: View {
         }
     }
 
+    static func stack<Content: View>(_ vertical: Bool, @ViewBuilder _ content: () -> Content) -> some View {
+        let layout = vertical ? AnyLayout(VStackLayout(spacing: 4)) : AnyLayout(HStackLayout(spacing: 4))
+        return layout { content() }
+    }
+
     private struct Wheel: View {
         let browser: Browser
         @ObservedObject var tab: Tab
+        var vertical = false
 
         var body: some View {
             let back = !tab.isBlank && tab.canGoBack
             let forward = !tab.isBlank && tab.canGoForward
-            HStack(spacing: 4) {
-                Door(icon: "chevron.left", help: "Back   ⌘[") { browser.back() }
+            Helm.stack(vertical) {
+                Door(icon: "chevron.left", help: "Back   ⌘[", held: { Rewind.menu(tab, back: true) }) { browser.back() }
                     .disabled(!back)
                     .opacity(back ? 1 : 0.3)
-                Door(icon: "chevron.right", help: "Forward   ⌘]") { browser.forward() }
+                Door(icon: "chevron.right", help: "Forward   ⌘]", held: { Rewind.menu(tab, back: false) }) { browser.forward() }
                     .disabled(!forward)
                     .opacity(forward ? 1 : 0.3)
                 // Reload, or stop while it is still coming.
@@ -560,6 +574,48 @@ struct Helm: View {
     }
 }
 
+/// Back or Forward held: every page that way, nearest at the top, each with
+/// its site's mark, as Safari and Chrome list them. Picking one goes straight
+/// there, however many steps away. Read when the menu opens, so it is never
+/// a page behind.
+@MainActor
+enum Rewind {
+    static func menu(_ tab: Tab, back: Bool) -> NSMenu? {
+        let pages = tab.pages(back: back)
+        guard !pages.isEmpty else { return nil }
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        for page in pages {
+            let title = page.title.flatMap { $0.isEmpty ? nil : $0 } ?? page.url.host() ?? page.url.absoluteString
+            let item = Pick(title: title) { [weak tab] in tab?.go(to: page) }
+            item.toolTip = page.url.absoluteString
+            if let image = Favicons.shared.cached(for: page.url, shy: tab.shy)?.copy() as? NSImage {
+                image.size = NSSize(width: 16, height: 16)
+                item.image = image
+            } else {
+                item.image = NSImage(systemSymbolName: "globe", accessibilityDescription: nil)
+            }
+            menu.addItem(item)
+        }
+        return menu
+    }
+
+    /// A menu row that runs its own closure, its own target.
+    private final class Pick: NSMenuItem {
+        private let run: () -> Void
+
+        init(title: String, run: @escaping () -> Void) {
+            self.run = run
+            super.init(title: title, action: #selector(fire), keyEquivalent: "")
+            target = self
+        }
+
+        required init(coder: NSCoder) { fatalError() }
+
+        @objc private func fire() { run() }
+    }
+}
+
 private struct TabPill: View {
     @Environment(\.tabShortcutNumbers) private var shortcutNumbers
     @ObservedObject var browser: Browser
@@ -574,6 +630,7 @@ private struct TabPill: View {
 
     @State private var hovering = false
     @State private var shake: CGFloat = 0
+    @State private var pressed = false
 
     private var editing: Bool { browser.editingTab == tab.id }
     private var pinned: Bool { tab.pin != nil && !editing }
@@ -637,7 +694,9 @@ private struct TabPill: View {
             }
         }
         .modifier(Shake(travel: shake))
+        .modifier(Give(pressed: pressed && prefs.tabsGive))
         .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .modifier(Pressing(down: $pressed, enabled: prefs.tabsGive))
         // Never both at once.
         //
         // A view carrying a single tap *and* a double tap has to wait out the
@@ -742,6 +801,8 @@ private struct TabPill: View {
                 }
                 // A window the page asked for was refused (BlockedPopups).
                 PopupSign(browser: browser, tab: tab, colour: colour)
+                // The page is translated (Translate.swift).
+                TranslateSign(tab: tab, colour: colour)
                 TitleAtRest(label: tab.label, rest: rest, shown: atRest, hovering: hovering,
                             size: 12.5, colour: colour, roomy: false)
             }
@@ -802,6 +863,7 @@ private struct TabPill: View {
         .frame(width: span, alignment: .leading)
         .animation(Motion.quick, value: speaker)
         .animation(Motion.quick, value: tab.blockedPopups.isEmpty)
+        .animation(Motion.quick, value: tab.translation == nil)
     }
 
     @ViewBuilder
@@ -874,6 +936,7 @@ struct Carried: ViewModifier {
     var onDrop: ((CGPoint) -> Void)? = nil
     /// A paired item can be picked up from either half; report that source.
     var onDropTab: ((Tab, CGPoint) -> Void)? = nil
+    var groupDestination: ((Tab, CGPoint) -> GroupDropTarget?)? = nil
     /// Let go outside the window: true when the tab was taken elsewhere —
     /// another window, or a new one (see Browser.dragOut).
     var outside: (() -> Bool)? = nil
@@ -893,6 +956,7 @@ struct Carried: ViewModifier {
     @State private var held = false
     @State private var from = 0
     @State private var travel: CGFloat = 0
+    @State private var reordered = false
 
     func body(content: Content) -> some View {
         // What it has travelled, less the ground its new place has already
@@ -900,6 +964,15 @@ struct Carried: ViewModifier {
         let shift = held ? travel - CGFloat(index - from) * step : 0
         return content
             .offset(x: vertical ? 0 : shift, y: vertical ? shift : 0)
+            .background {
+                if let browser, let tab, browser.prefs.usesTabGroups, let group = browser.group(of: tab) {
+                    GeometryReader { geometry in
+                        Color.clear.preference(key: GroupDropFrames.self,
+                            value: [tab.id: GroupDropFrame(group: group, tab: tab.id,
+                                                         rect: geometry.frame(in: .named(space)))])
+                    }
+                }
+            }
             // Under the hand exactly. Its place in the row springs when it
             // passes another tab, and the offset springs back the same way —
             // until the next move of the hand cuts the offset's spring short
@@ -924,8 +997,14 @@ struct Carried: ViewModifier {
                            TabDrag.shared.update(browser: browser, tab: tab,
                                                  translation: value.translation) { return }
                         if crossed { return }
+                        // A tab of a group, or one over a group, lands where
+                        // it is let go (see GroupDropFrames.resolve) rather
+                        // than moving along the row as it goes.
+                        if let browser, let tab, browser.prefs.usesTabGroups, tab.pin == nil,
+                           browser.group(of: tab) != nil || groupDestination?(tab, value.location) != nil { return }
                         let target = min(max(0, from + Int((travel / step).rounded())), count - 1)
                         if target != index {
+                            reordered = true
                             withAnimation(Motion.settle) { move(target) }
                         }
                     }
@@ -942,16 +1021,19 @@ struct Carried: ViewModifier {
                                 case .stage(let target, let onLeft):
                                     browser.pair(source, with: target, onLeft: onLeft)
                                 case .strip(let target):
-                                    browser.dropTabIntoStrip(source, before: target)
-                                    if let onDropTab { onDropTab(source, value.location) }
-                                    else if source.id == tab.id { onDrop?(value.location) }
+                                    if let destination = groupDestination?(source, value.location) {
+                                        // Resolve before detaching: the old pair still owns its frame.
+                                        browser.move(source, toGroup: destination, detaching: true)
+                                    } else {
+                                        browser.dropTabIntoStrip(source, before: target)
+                                    }
                                 case .outside:
                                     if !browser.dragOut(source, at: finished.point) {
                                         if let onDropTab { onDropTab(source, value.location) }
                                         else if source.id == tab.id { onDrop?(value.location) }
                                     }
                                 case .cancelled:
-                                    move(from)
+                                    if reordered { move(from) }
                                 }
                             }
                         } else if land?(value.location) != true, outside?() != true {
@@ -961,15 +1043,17 @@ struct Carried: ViewModifier {
                         withAnimation(Motion.settle) {
                             held = false
                             travel = 0
+                            reordered = false
                         }
                     }
             )
             .onReceive(TabDrag.shared.$cancelledID) { id in
                 guard id == tab?.id, held else { return }
                 _ = land?(nil)
-                move(from)
+                if reordered { move(from) }
                 held = false
                 travel = 0
+                reordered = false
             }
     }
 }
@@ -1234,7 +1318,7 @@ struct TabMenu: View {
         }
         if tab.pin == nil, !tab.bench {
             // Another window, or a new one (see Browser.moveToWindow).
-            let others = Browsers.all.filter { $0 !== browser && $0.isOpen && $0.extensionPopup == nil }
+            let others = Browsers.all.filter { $0 !== browser && $0.isOpen && !$0.isPopup && $0.profileID == browser.profileID }
             if others.isEmpty {
                 Button("Move to New Window") { browser.moveToWindow(tab, nil) }
                     .disabled(browser.tabs.count < 2)
@@ -1292,9 +1376,18 @@ struct TabMenu: View {
         }
         .disabled(browser.awake(because: tab) != nil)
         Divider()
-        Button("Close Tab", action: close)
+        // Right-clicked among tabs picked in the column: all of them, as ⌘W
+        // closes them.
+        let picked = browser.selectedTabIDs.contains(tab.id) ? browser.visibleSelectedTabCount : 1
+        if picked > 1 {
+            Button("Close \(picked) Tabs") { browser.closePickedTabs() }
+        } else {
+            Button("Close Tab", action: close)
+        }
         Button("Close Other Tabs") { browser.closeOthers(but: tab) }
             .disabled(browser.tabs.count < 2)
+        Button(browser.prefs.sidebar ? "Close Tabs Below" : "Close Tabs to the Right") { browser.closeTabsBelow(tab) }
+            .disabled(browser.tabsBelow(tab).isEmpty)
         // ⌘⇧T, and the History menu's Recently Closed, where few think to
         // look for it: here too, where tabs are closed.
         Button(browser.reopenTitle) { browser.reopen() }
@@ -1307,6 +1400,9 @@ struct TabPress: ViewModifier {
     let enabled: Bool
     let active: Bool
     @Binding var selected: Bool
+    /// Told when the button goes down on the tab and comes back up, whatever
+    /// the press goes on to do, for the tab to give under it (see Give).
+    var pressing: Binding<Bool>? = nil
     let act: () -> Void
 
     /// How far the hand may go before the press gives way to the row's
@@ -1320,6 +1416,7 @@ struct TabPress: ViewModifier {
 
     func body(content: Content) -> some View {
         content.onLongPressGesture(minimumDuration: .infinity, maximumDistance: TabPress.travel, pressing: { down in
+            pressing?.wrappedValue = down
             if !down {
                 // Given way to a drag, the button still down: what the press
                 // did stands until the release, so the release can't take
@@ -1346,6 +1443,40 @@ struct TabPress: ViewModifier {
             monitor = nil
             DispatchQueue.main.async(execute: act)
             return event
+        }
+    }
+}
+
+/// Only whether the button is down on the view, by TabPress's means, for a
+/// tab whose click answers on release: the strip's pills.
+/// Only while tabs give (Settings › Tabs): otherwise the pill carries no
+/// gesture more than it did.
+struct Pressing: ViewModifier {
+    @Binding var down: Bool
+    var enabled = true
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if enabled {
+            content.onLongPressGesture(minimumDuration: .infinity, maximumDistance: .infinity,
+                                       pressing: { down = $0 }, perform: {})
+        } else {
+            content
+        }
+    }
+}
+
+/// A tab gives a little under the button and springs back when it is let
+/// go, the life Arc's tabs have when clicked. Going down is quick, so the
+/// click is answered at once; coming back is the settle spring. Only the
+/// scale is animated, so the selection the press makes isn't slowed with
+/// it. Nothing moves with Reduce Motion on.
+struct Give: ViewModifier {
+    let pressed: Bool
+
+    func body(content: Content) -> some View {
+        content.animation(pressed ? Motion.quick : Motion.settle) {
+            $0.scaleEffect(pressed && !Motion.reduced ? Motion.give : 1)
         }
     }
 }
