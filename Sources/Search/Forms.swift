@@ -212,7 +212,7 @@ final class FormRelay: NSObject, WKScriptMessageHandler {
       }
       function aside(el) {
         if (/^(q|to|cc|bcc|subject)$/.test(((el.name || '') + '').toLowerCase()) || /^(q|to|cc|bcc|subject)$/.test((el.id || '').toLowerCase())) return true;
-        if (/(^|[\\s_\\-\\[])title($|[\\s_\\-\\]])|query|search|recherche|suche|buscar|otp|otc|one-time|captcha|code|coupon|promo|voucher|gift|recipient|destinataire|comment|message|description|project|projet/.test(words(el))) return true;
+        if (/(^|[\\s_\\-\\[])title($|[\\s_\\-\\]])|query|search|recherche|suche|buscar|otp|otc|one-time|captcha|code|coupon|promo|voucher|gift|recipient|destinataire|comment|message|description|project|projet|filter|filtering|model|筛选|过滤|模型|搜索|查询|检索/.test(words(el))) return true;
         return !!(el.closest && el.closest('[role="search"], [role="combobox"] input, form[role="search"]'))
           || (el.getAttribute('role') || '') === 'combobox' && !vouched(el);
       }
